@@ -4,7 +4,6 @@ go 1.25
 
 require (
 	github.com/armon/go-proxyproto v0.1.0
-	github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048
 	golang.org/x/crypto v0.44.0
 	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
