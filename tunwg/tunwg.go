@@ -21,7 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var forwardFlag = flag.String("forward", "", "hosts to forward")
+var tunnelFlag = flag.String("tunnel", "", "hosts to tunnel")
 var limitFlag = flag.String("limit", "", "username password in htpasswd format. bcrypt and plain text are supported")
 var limitOncePerIPFlag = flag.Duration("limit_once_on_ip", 0, "Only ask for basic auth once per ip per duration")
 var portFlag = flag.Uint("p", 0, "port to forward")
@@ -43,8 +43,8 @@ func main() {
 		os.Args = append(os.Args[:1], os.Args[2:]...)
 	}
 	flag.Parse()
-	if (*forwardFlag == "") == (*portFlag == 0) {
-		log.Fatalf("Specify one of port to forward (-p) or urls to forward (--forward)")
+	if (*tunnelFlag == "") == (*portFlag == 0) {
+		log.Fatalf("Specify one of port to forward (-p) or urls to tunnel (--tunnel)")
 	}
 	if internal.TestOnlyRunLocalhost() {
 		enableLocahostServerTesting()
@@ -57,7 +57,7 @@ func main() {
 			os.Setenv("TUNWG_KEY", fmt.Sprintf("p%d", port))
 		}
 	} else {
-		ps = strings.Split(*forwardFlag, ",")
+		ps = strings.Split(*tunnelFlag, ",")
 	}
 	var g sync.WaitGroup
 	for _, p := range ps {

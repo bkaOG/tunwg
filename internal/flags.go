@@ -13,6 +13,13 @@ func GetListenPort() int {
 	return 0
 }
 
+func GetHttpPort() int {
+	if port := os.Getenv("TUNWG_HTTP_PORT"); port != "" {
+		return Must(strconv.Atoi(port))
+	}
+	return 80
+}
+
 func Keystorage() string {
 	store := os.Getenv("TUNWG_PATH")
 	if store == "" {

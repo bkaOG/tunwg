@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,7 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/inetaf/tcpproxy"
 	"github.com/ntnj/tunwg/internal"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -35,22 +32,15 @@ func tunwgServer() {
 	if err := internal.Initialize(); err != nil {
 		log.Fatalf("failed to initialize: %v", err)
 	}
-	l443 := &tcpproxy.TargetListener{Address: "https"}
-	go func() {
-		if err := http.Serve(tls.NewListener(l443, internal.GetTLSConfig()), apiMux()); err != nil {
-			log.Fatalf("failed to serve api: %v", err)
-		}
-	}()
-	l80 := &tcpproxy.TargetListener{Address: "http"}
-	go func() {
-		if err := http.Serve(l80, sslRedirect()); err != nil {
-			log.Fatalf("failed to serve redirect handler: %v", err)
-		}
-	}()
+	
 	go globalPersist.loadFromDisk()
 	go globalPersist.backgroundWriter(time.Minute)
 	go internal.BackgroundLogger(10 * time.Second)
-	log.Fatalf("failed to run: %v", runSniProxy(l80, l443))
+	
+	httpPort := fmt.Sprintf(":%d", internal.GetHttpPort())
+	mux := createServerMux()
+	log.Printf("tunwg server starting on %s", httpPort)
+	log.Fatalf("failed to run: %v", http.ListenAndServe(httpPort, mux))
 }
 
 func allowUserKey(key wgtypes.Key, endpoint string) error {
@@ -64,31 +54,10 @@ func allowUserKey(key wgtypes.Key, endpoint string) error {
 	return internal.WgSetIpc(ipc)
 }
 
-func sslRedirect() *http.ServeMux {
+func createServerMux() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/.well-known/acme-challenge/", &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			ipport, err := getIPForDomain(pr.In.Host)
-			if err != nil {
-				log.Printf("unable to find host: %v", pr.In.Host)
-				return
-			}
-			newPort := netip.AddrPortFrom(ipport.Addr(), 80)
-			pr.Out.URL.Scheme = "http"
-			pr.Out.URL.Host = fmt.Sprintf("%v", newPort.String())
-		},
-		Transport: &http.Transport{
-			DialContext: internal.DialWg,
-		},
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://"+r.Host+r.RequestURI, http.StatusMovedPermanently)
-	})
-	return mux
-}
-
-func apiMux() *http.ServeMux {
-	mux := http.NewServeMux()
+	
+	// API endpoints
 	mux.HandleFunc("/add", func(w http.ResponseWriter, r *http.Request) {
 		if authKey, reqKey := internal.AuthKey(), r.Header.Get("X-Authorization"); authKey != "" && authKey != reqKey {
 			w.WriteHeader(http.StatusForbidden)
@@ -128,6 +97,7 @@ func apiMux() *http.ServeMux {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(respBytes)
 	})
+	
 	mux.HandleFunc("/relay", func(w http.ResponseWriter, r *http.Request) {
 		if proto := r.Header.Get("Upgrade"); proto != "udp-relay" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -156,28 +126,45 @@ func apiMux() *http.ServeMux {
 			log.Printf("relay error: %v", err)
 		}
 	})
-	return mux
-}
-
-func runSniProxy(l80, l443 *tcpproxy.TargetListener) error {
-	var proxy tcpproxy.Proxy
-	proxy.AddRoute(":80", l80)
-	proxy.AddSNIRoute(":443", internal.ApiDomain(), l443)
-	proxy.AddSNIRouteFunc(":443", func(ctx context.Context, sniName string) (tcpproxy.Target, bool) {
-		log.Printf("received request for: %v", sniName)
-		addr, err := getIPForDomain(sniName)
-		if err != nil {
-			log.Printf("dispatch error: %v", err)
-			return nil, false
+	
+	// Default handler - proxy to client via wireguard
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if host == "" {
+			http.Error(w, "No host specified", http.StatusBadRequest)
+			return
 		}
-		return &tcpproxy.DialProxy{
-			Addr:                 addr.String(),
-			DialContext:          internal.DialWg,
-			DialTimeout:          5 * time.Second,
-			ProxyProtocolVersion: 1,
-		}, true
+		
+		// Check if this is for the API domain
+		if strings.HasSuffix(host, internal.ApiDomain()) || host == internal.ApiDomain() {
+			// This should have been handled by specific routes above
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+		
+		// Proxy to client
+		addr, err := getIPForDomain(host)
+		if err != nil {
+			log.Printf("dispatch error for %s: %v", host, err)
+			http.Error(w, "Unable to route request", http.StatusBadGateway)
+			return
+		}
+		
+		proxy := &httputil.ReverseProxy{
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				log.Printf("[%v] %v %v%v %v", time.Now(), pr.In.Method, pr.In.Host, pr.In.URL.Path, pr.In.RemoteAddr)
+				pr.Out.URL.Scheme = "http"
+				pr.Out.URL.Host = addr.String()
+				pr.SetXForwarded()
+			},
+			Transport: &http.Transport{
+				DialContext: internal.DialWg,
+			},
+		}
+		proxy.ServeHTTP(w, r)
 	})
-	return proxy.Run()
+	
+	return mux
 }
 
 func getIPForDomain(sniName string) (*netip.AddrPort, error) {

@@ -119,9 +119,8 @@ func NewListener(name string) (net.Listener, error) {
 		return nil, err
 	}
 	pl := &proxyproto.Listener{Listener: l, UnknownOK: true}
-	tl := tls.NewListener(&Listener{pl, port}, internal.GetTLSConfig())
-	log.Printf("tunwg: %v <= https://%v.%v", name, tl.Addr(), internal.ApiDomain())
-	return tl, nil
+	log.Printf("tunwg: %v <= http://%v.%v", name, &Listener{pl, port}, internal.ApiDomain())
+	return &Listener{pl, port}, nil
 }
 
 var handshakeOnce sync.Once
